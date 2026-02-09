@@ -1413,7 +1413,10 @@ async fn start_ldk() {
 				});
 			}
 		},
-		Err(_) => println!("WARNING: prober_config.json is missing. Probing disabled."),
+		Err(_) => println!(
+			"WARNING: prober_config.json is missing at {}/prober_config.json. Probing disabled.",
+			ldk_data_dir
+		),
 	};
 
 	// Start the CLI.
