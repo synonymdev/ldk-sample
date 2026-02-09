@@ -310,7 +310,7 @@ fn read_probe_file(ldk_data_dir: &str) -> Result<ProbeConfig, std::io::Error> {
 	let prober_file = format!("{}/prober_config.json", ldk_data_dir);
 	let file = fs::read_to_string(prober_file)?;
 	let config: ProbeConfig = serde_json::from_str(&file)
-		.map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
+		.map_err(std::io::Error::other)?;
 	Ok(config)
 }
 
@@ -335,12 +335,13 @@ fn handle_ldk_events<'a>(
 				// Construct the raw transaction with one output, that is paid the amount of the
 				// channel.
 				let addr = WitnessProgram::from_scriptpubkey(
-					&output_script.as_bytes(),
+					output_script.as_bytes(),
 					match network {
 						Network::Bitcoin => bitcoin_bech32::constants::Network::Bitcoin,
 						Network::Regtest => bitcoin_bech32::constants::Network::Regtest,
 						Network::Signet => bitcoin_bech32::constants::Network::Signet,
-						Network::Testnet | _ => bitcoin_bech32::constants::Network::Testnet,
+						Network::Testnet => bitcoin_bech32::constants::Network::Testnet,
+						_ => bitcoin_bech32::constants::Network::Testnet,
 					},
 				)
 				.expect("Lightning funding tx should always be to a SegWit output")
@@ -356,7 +357,7 @@ fn handle_ldk_events<'a>(
 				// Sign the final funding transaction and give it to LDK, who will eventually broadcast it.
 				let signed_tx =
 					bitcoind_client.sign_raw_transaction_with_wallet(funded_tx.hex).await;
-				assert_eq!(signed_tx.complete, true);
+				assert!(signed_tx.complete);
 				let final_tx: Transaction =
 					encode::deserialize(&hex_utils::to_vec(&signed_tx.hex).unwrap()).unwrap();
 				// Give the funding transaction back to LDK for opening the channel.
@@ -729,7 +730,8 @@ async fn start_ldk() {
 			bitcoin::Network::Bitcoin => "main",
 			bitcoin::Network::Regtest => "regtest",
 			bitcoin::Network::Signet => "signet",
-			bitcoin::Network::Testnet | _ => "test",
+			bitcoin::Network::Testnet => "test",
+			_ => "test",
 		} {
 		println!(
 			"Chain argument ({}) didn't match bitcoind chain ({})",
@@ -1095,11 +1097,11 @@ async fn start_ldk() {
 	let recent_payments_payment_ids = channel_manager
 		.list_recent_payments()
 		.into_iter()
-		.filter_map(|p| match p {
-			RecentPaymentDetails::Pending { payment_id, .. } => Some(payment_id),
-			RecentPaymentDetails::Fulfilled { payment_id, .. } => Some(payment_id),
-			RecentPaymentDetails::Abandoned { payment_id, .. } => Some(payment_id),
-			RecentPaymentDetails::AwaitingInvoice { payment_id } => Some(payment_id),
+		.map(|p| match p {
+			RecentPaymentDetails::Pending { payment_id, .. } => payment_id,
+			RecentPaymentDetails::Fulfilled { payment_id, .. } => payment_id,
+			RecentPaymentDetails::Abandoned { payment_id, .. } => payment_id,
+			RecentPaymentDetails::AwaitingInvoice { payment_id } => payment_id,
 		})
 		.collect::<Vec<PaymentId>>();
 	for (payment_id, payment_info) in outbound_payments
@@ -1213,9 +1215,9 @@ async fn start_ldk() {
 				let id = NodeId::from_pubkey(&node_id);
 				let addrs = if let Some(node) = graph_connect.read_only().node(&id) {
 					if let Some(ann) = &node.announcement_info {
-						let non_onion = |addr| match addr {
-							&lightning::ln::msgs::SocketAddress::OnionV2(_) => None,
-							&lightning::ln::msgs::SocketAddress::OnionV3 { .. } => None,
+						let non_onion = |addr: &lightning::ln::msgs::SocketAddress| match addr {
+							lightning::ln::msgs::SocketAddress::OnionV2(_) => None,
+							lightning::ln::msgs::SocketAddress::OnionV3 { .. } => None,
 							_ => Some(addr.clone()),
 						};
 						ann.addresses().iter().filter_map(non_onion).collect::<Vec<_>>()
@@ -1387,7 +1389,7 @@ async fn start_ldk() {
 	peer_manager.disconnect_all_peers();
 
 	if let Err(e) = bg_res {
-		let persist_res = fs_store
+		fs_store
 			.write(
 				persist::CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
 				persist::CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
@@ -1399,13 +1401,12 @@ async fn start_ldk() {
 		use lightning::util::logger::Logger;
 		lightning::log_error!(
 			&*logger,
-			"Last-ditch ChannelManager persistence result: {:?}",
-			persist_res
+			"Last-ditch ChannelManager persistence completed"
 		);
 		panic!(
 			"ERR: background processing stopped with result {:?}, exiting.\n\
-			Last-ditch ChannelManager persistence result {:?}",
-			e, persist_res
+			Last-ditch ChannelManager persistence completed",
+			e
 		);
 	}
 
